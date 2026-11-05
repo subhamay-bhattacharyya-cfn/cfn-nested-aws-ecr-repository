@@ -1,137 +1,246 @@
-AWSTemplateFormatVersion: '2010-09-09'
-
-Description: 'Root CloudFormation template that invokes a nested S3 bucket stack'
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Amazon ECR private repository with immutable tags, scan on push, AES256 or KMS
+  encryption at rest, lifecycle rules to expire old images, and an optional
+  cross-account pull policy.
 
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
-          default: "Nested Stack Configuration"
-        Parameters:
-          - NestedStacksS3BucketName
-      - Label:
-          default: "Common Bucket Configuration"
+          default: Repository
         Parameters:
           - ProjectName
-          - Environment
-      - Label:
-          default: "Bucket Configuration"
-        Parameters:
-          - BucketBaseName
-      - Label:
-          default: "Encryption Configuration"
-        Parameters:
-          - KmsKey
-          - EnableBucketKey
-      - Label:
-          default: "Advanced Configuration"
-        Parameters:
+          - RepositoryBaseName
+          - ImageTagMutability
+          - ForceDelete
           - CiSuffix
-    ParameterLabels:
-      NestedStacksS3BucketName:
-        default: "S3 Bucket Name"
-      ProjectName:
-        default: "Project Name"
-      BucketBaseName:
-        default: "Bucket Base Name"
-      Environment:
-        default: "Environment"
-      CiSuffix:
-        default: "CI Suffix"
-      KmsKey:
-        default: "KMS Key (ARN / Alias)"
-      EnableBucketKey:
-        default: "Enable S3 Bucket Key"
+      - Label:
+          default: Security
+        Parameters:
+          - ScanOnPush
+          - EncryptionType
+          - KmsKeyArn
+          - PullPrincipalArns
+      - Label:
+          default: Lifecycle
+        Parameters:
+          - UntaggedImageExpiryDays
+          - MaxTaggedImageCount
+      - Label:
+          default: Tagging
+        Parameters:
+          - Environment
+          - Owner
 
 Parameters:
-  NestedStacksS3BucketName:
-    Type: String
-    Default: "subhamay-cfn-templates-bucket-270453428528-us-east-1"
-    Description: "S3 bucket name where the nested CloudFormation template is stored"
-    MinLength: 3
-    MaxLength: 63
-    AllowedPattern: "^[a-z0-9][a-z0-9.-]*[a-z0-9]$"
-    ConstraintDescription: "S3 bucket name must be 3-63 characters, start and end with lowercase letter or number, and can contain hyphens and dots"
-
   ProjectName:
     Type: String
-    Default: "ztc-etl"
-    Description: "Project name to use as a bucket prefix"
+    Description: Project name used as the prefix of the repository name.
+    AllowedPattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    ConstraintDescription: Project name must be lowercase letters, numbers, and hyphens, starting and ending with a letter or number.
     MinLength: 1
     MaxLength: 20
-    AllowedPattern: "^[a-z0-9-]+$"
-    ConstraintDescription: "Project name must be lowercase letters, numbers, and hyphens only"
 
-  BucketBaseName:
+  RepositoryBaseName:
     Type: String
-    Default: "csv-raw-data"
-    MinLength: 1
-    MaxLength: 20
-    AllowedPattern: "^[a-z0-9.-]+$"
-    ConstraintDescription: "Bucket base name must be 1-20 characters and can only contain lowercase letters, numbers, hyphens, and dots"
-    Description: Base name for the S3 bucket (account ID, environment, and region will be appended)
+    Description: Base name of the ECR repository. Account ID, environment, and region are appended to form the full name.
+    AllowedPattern: "^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+    ConstraintDescription: Must be lowercase letters, numbers, hyphens, underscores, or periods, starting and ending with a letter or number.
+    MinLength: 2
+    MaxLength: 100
 
-  KmsKey:
+  CiSuffix:
     Type: String
     Default: ""
-    AllowedPattern: "^(alias/[a-zA-Z0-9_-]+|arn:aws:kms:[a-z0-9-]+:[0-9]+:key/[a-zA-Z0-9-]+|[a-zA-Z0-9_-]+)?$"
-    ConstraintDescription: "KMS Key can be a key name (e.g., my-key, auto-converted to alias/my-key), a KMS key alias (e.g., alias/my-key), or a full KMS key ARN (e.g., arn:aws:kms:region:account:key/key-id), or leave empty for no KMS encryption"
-    Description: "Optional KMS Key for S3 bucket encryption. Accepts: key name (my-key), alias (alias/my-key), or ARN (arn:aws:kms:region:account:key/key-id). Plain key names are auto-converted to aliases."
+    AllowedPattern: "^$|^[a-z0-9]+(?:[._-][a-z0-9]+)*$"
+    ConstraintDescription: CI suffix must be empty or lowercase letters, numbers, hyphens, underscores, or periods, starting and ending with a letter or number.
+    MaxLength: 32
+    Description: "Optional CI suffix appended to the repository name (for example, my-app-pr42)"
 
-  EnableBucketKey:
+  ImageTagMutability:
+    Type: String
+    Default: MUTABLE
+    AllowedValues:
+      - IMMUTABLE
+      - MUTABLE
+    Description: Whether image tags can be overwritten. IMMUTABLE is recommended.
+
+  ForceDelete:
     Type: String
     Default: "false"
     AllowedValues:
       - "true"
       - "false"
-    Description: "Enable S3 Bucket Key for KMS encryption cost optimization (only applicable when KmsKey is provided)"
+    Description: If true, CloudFormation deletes the repository even when it still contains images.
+
+  ScanOnPush:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Run a basic vulnerability scan on every image push.
+
+  EncryptionType:
+    Type: String
+    Default: KMS
+    AllowedValues:
+      - AES256
+      - KMS
+    Description: Encryption at rest. Use KMS with KmsKeyArn for customer-managed keys.
+
+  KmsKeyArn:
+    Type: String
+    Default: "alias/SB-KMS"
+    AllowedPattern: "^$|^arn:aws[a-zA-Z-]*:kms:[a-z0-9-]+:[0-9]{12}:(key|alias)/[A-Za-z0-9:/_-]+$|^alias/[A-Za-z0-9:/_-]+$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    ConstraintDescription: Must be empty, a KMS key ARN, a KMS alias ARN, a KMS alias name (alias/...), or a KMS key ID.
+    Description: >
+      KMS key to encrypt the repository with. Accepts a key ARN, alias ARN, alias name
+      (alias/my-key), or key ID. Required when EncryptionType is KMS.
+
+  PullPrincipalArns:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: >
+      Optional comma-separated IAM role or account ARNs granted pull access
+      (for example, a cross-account role). Leave empty to skip the repository policy.
+
+  UntaggedImageExpiryDays:
+    Type: Number
+    Default: 14
+    MinValue: 1
+    MaxValue: 365
+    Description: Days after which untagged images expire.
+
+  MaxTaggedImageCount:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 1000
+    Description: Maximum number of tagged images to retain.
 
   Environment:
     Type: String
     Default: devl
-    Description: "Deployment environment for the S3 bucket"
+    AllowedValues:
+      - devl
+      - test
+      - prod
 
-  CiSuffix:
+  Owner:
     Type: String
-    Default: ""
-    Description: "Optional CI suffix to append to the bucket name"
+    Default: platform-team
+    Description: Owner tag value.
+
+Conditions:
+  UseKmsWithKey: !And
+    - !Equals [!Ref EncryptionType, KMS]
+    - !Not [!Equals [!Ref KmsKeyArn, ""]]
+  HasPullPrincipals: !Not [!Equals [!Join ["", !Ref PullPrincipalArns], ""]]
+  ForceDeleteEnabled: !Equals [!Ref ForceDelete, "true"]
+  HasCiSuffix: !Not [!Equals [!Ref CiSuffix, ""]]
+
+Rules:
+  KmsKeyRequired:
+    RuleCondition: !Equals [!Ref EncryptionType, KMS]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref KmsKeyArn, ""]]
+        AssertDescription: KmsKeyArn must be provided when EncryptionType is KMS.
 
 Resources:
-  S3BucketNestedStack:
-    Type: AWS::CloudFormation::Stack
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
+  EcrRepository:
     Metadata:
       com.aws.cloudformation.Context:
-        why: "Invokes the nested S3 bucket CloudFormation template to create a versioned, encrypted S3 bucket with public access blocking and optional logging/website configuration"
+        why: >
+          Private container image repository with immutable tags, scan on push,
+          AES256 or KMS encryption at rest, lifecycle rules to expire old images,
+          and an optional cross-account pull policy.
         must:
-          - "Nested template must be accessible at the specified S3 location"
-          - "IAM principal must have s3:GetObject permission on the template S3 bucket"
-          - "CloudFormation service must have permission to assume the required IAM role for S3 and KMS operations"
+          - When EncryptionType is KMS, KmsKeyArn must be provided (enforced by the KmsKeyRequired rule).
+        trust:
+          src: comment
+          conf: high
+          note: "Rationale taken from the template Description and parameter descriptions"
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
-      TemplateURL: !Sub https://${NestedStacksS3BucketName}.s3.us-east-1.amazonaws.com/cfn-nested-aws-s3-bucket/template.yaml
-      Parameters:
-        ProjectName: !Ref ProjectName
-        BucketBaseName: !Ref BucketBaseName
-        KmsKey: !Ref KmsKey
-        EnableBucketKey: !Ref EnableBucketKey
-        Environment: !Ref Environment
-        CiSuffix: !Ref CiSuffix
+      RepositoryName: !If
+        - HasCiSuffix
+        - !Sub '${ProjectName}-${RepositoryBaseName}-${AWS::AccountId}-${Environment}-${AWS::Region}-${CiSuffix}'
+        - !Sub '${ProjectName}-${RepositoryBaseName}-${AWS::AccountId}-${Environment}-${AWS::Region}'
+      ImageTagMutability: !Ref ImageTagMutability
+      ImageScanningConfiguration:
+        ScanOnPush: !Ref ScanOnPush
+      EncryptionConfiguration:
+        EncryptionType: !Ref EncryptionType
+        KmsKey: !If [UseKmsWithKey, !Ref KmsKeyArn, !Ref AWS::NoValue]
+      EmptyOnDelete: !If [ForceDeleteEnabled, true, !Ref AWS::NoValue]
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images after ${UntaggedImageExpiryDays} days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": ${UntaggedImageExpiryDays}
+                },
+                "action": { "type": "expire" }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Keep only the most recent ${MaxTaggedImageCount} tagged images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": ${MaxTaggedImageCount}
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
       Tags:
+        - Key: Name
+          Value: !If
+            - HasCiSuffix
+            - !Sub '${ProjectName}-${RepositoryBaseName}-${AWS::AccountId}-${Environment}-${AWS::Region}-${CiSuffix}'
+            - !Sub '${ProjectName}-${RepositoryBaseName}-${AWS::AccountId}-${Environment}-${AWS::Region}'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Owner
+          Value: !Ref Owner
         - Key: ManagedBy
-          Value: RootStack
-        - Key: NestedStackPurpose
-          Value: S3BucketCreation
+          Value: CloudFormation
+      RepositoryPolicyText: !If
+        - HasPullPrincipals
+        - Version: "2012-10-17"
+          Statement:
+            - Sid: AllowCrossAccountPull
+              Effect: Allow
+              Principal:
+                AWS: !Ref PullPrincipalArns
+              Action:
+                - ecr:BatchGetImage
+                - ecr:GetDownloadUrlForLayer
+                - ecr:BatchCheckLayerAvailability
+        - !Ref AWS::NoValue
 
 Outputs:
-  NestedStackId:
-    Description: "ID of the nested stack"
-    Value: !Ref S3BucketNestedStack
+  RepositoryName:
+    Description: Name of the ECR repository.
+    Value: !Ref EcrRepository
 
-  S3BucketName:
-    Description: "Name of the S3 bucket created by the nested stack"
-    Value: !GetAtt S3BucketNestedStack.Outputs.S3BucketName
+  RepositoryArn:
+    Description: ARN of the ECR repository.
+    Value: !GetAtt EcrRepository.Arn
 
-  S3BucketArn:
-    Description: "ARN of the S3 bucket created by the nested stack"
-    Value: !GetAtt S3BucketNestedStack.Outputs.S3BucketArn
+  RepositoryUri:
+    Description: URI used for docker push and pull.
+    Value: !GetAtt EcrRepository.RepositoryUri
+    Export:
+      Name: !Sub "${AWS::StackName}-RepositoryUri"

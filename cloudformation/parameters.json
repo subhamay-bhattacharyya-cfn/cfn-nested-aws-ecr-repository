@@ -1,7 +1,6 @@
 {
+  "ProjectName": "cfn-nested",
+  "RepositoryBaseName": "ecr-nested-stack",
   "Environment": "devl",
-  "KmsKey": "SB-KMS",
-  "ProjectName": "cfn-nstd",
-  "BucketBaseName": "s3-nested-stack",
   "CiSuffix": ""
 }
